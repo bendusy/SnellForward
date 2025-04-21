@@ -67,10 +67,10 @@ install_deps() {
 
 # 函数：生成随机端口
 generate_port() {
-    local port=$(shuf -i 10000-65535 -n 1)
+    local port=$(shuf -i 40000-65535 -n 1)
     # 检查端口是否被占用 (简单检查)
     while ss -tuln | grep -q ":$port\b" || [ -z "$port" ]; do
-        port=$(shuf -i 10000-65535 -n 1)
+        port=$(shuf -i 40000-65535 -n 1)
     done
     echo "$port"
 }
@@ -95,7 +95,7 @@ setup_landing_server() {
 
     # --- 下载和安装 Snell ---
     echo -e "${YELLOW}正在下载 Snell v4 服务端...${NC}"
-    wget -q -O "$snell_zip" "$snell_url"
+    wget -q --tries=3 --connect-timeout=15 -O "$snell_zip" "$snell_url"
     if [ $? -ne 0 ]; then
         echo -e "${RED}错误：Snell 下载失败，请检查网络或链接。${NC}"
         exit 1
@@ -158,8 +158,17 @@ EOF
     systemctl enable snell
     systemctl restart snell
 
-    # --- 检查服务状态 ---
-    sleep 2 # 等待服务启动
+    # --- 检查服务状态 (增加重试) ---
+    echo -e "${YELLOW}正在检查 Snell 服务状态...${NC}"
+    local retry_count=0
+    local max_retries=5
+    local check_interval=2 # seconds
+    while ! systemctl is-active --quiet snell && [ $retry_count -lt $max_retries ]; do
+        echo -e "${YELLOW}Snell 服务尚未启动，等待 $check_interval 秒后重试 ($((retry_count+1))/$max_retries)...${NC}"
+        sleep $check_interval
+        ((retry_count++))
+    done
+
     if systemctl is-active --quiet snell; then
         echo -e "${GREEN}Snell 服务已成功启动并设置为开机自启！${NC}"
     else
@@ -169,13 +178,16 @@ EOF
     fi
 
     # --- 显示配置信息 ---
-    local server_ip=$(curl -s https://api.ipify.org || hostname -I | awk '{print $1}')
+    local server_ip=$(curl -s --connect-timeout 5 https://api.ipify.org || hostname -I | awk '{print $1}')
     echo -e "\n${GREEN}--- Snell 落地服务器配置完成 ---${NC}"
     echo -e "请记录以下信息，将在配置线路机时使用："
     echo -e "落地服务器 IP: ${YELLOW}$server_ip${NC}"
     echo -e "Snell 端口: ${YELLOW}$snell_port${NC}"
     echo -e "Snell 密码 (PSK): ${YELLOW}$snell_psk${NC}"
-    echo -e "\n${YELLOW}重要提示：请确保防火墙已放行 TCP 端口 $snell_port ${NC}"
+    echo -e "\\n可以直接复制到 Surge 配置 [Proxy] 段的格式："
+    echo -e "${YELLOW}Snell_Landing = snell, $server_ip, $snell_port, psk=$snell_psk, version=4, reuse=true, tfo=true${NC}"
+    echo -e "${YELLOW}(注意：此配置未启用 obfs。如需 shadow-tls 等混淆，请自行修改 Snell 服务端配置并在此行添加相应参数)${NC}"
+    echo -e "\\n${YELLOW}重要提示：请确保防火墙已放行 TCP 端口 $snell_port ${NC}"
     echo -e "${GREEN}-----------------------------------${NC}"
 }
 
@@ -238,10 +250,30 @@ setup_relay_server() {
     # 清理脚本
     # rm -f "$ezrealm_script" # 保留脚本方便后续管理 Realm
 
+    # --- 检查 Realm 监听端口状态 ---
+    echo -e "${YELLOW}正在检查 Realm 监听端口 $realm_listen_port 是否已启动...${NC}"
+    local realm_retry_count=0
+    local realm_max_retries=5
+    local realm_check_interval=3 # seconds
+    while ! ss -tuln | grep -q ":$realm_listen_port\\b" && [ $realm_retry_count -lt $realm_max_retries ]; do
+        echo -e "${YELLOW}端口 $realm_listen_port 尚未监听，等待 $realm_check_interval 秒后重试 ($((realm_retry_count+1))/$realm_max_retries)...${NC}"
+        sleep $realm_check_interval
+        ((realm_retry_count++))
+    done
+
+    if ss -tuln | grep -q ":$realm_listen_port\\b"; then
+        echo -e "${GREEN}Realm 监听端口 $realm_listen_port 已成功启动！${NC}"
+        echo -e "${YELLOW}(注意：这仅确认端口正在监听，不保证转发规则配置完全正确，请进行连接测试)${NC}"
+    else
+        echo -e "${RED}错误：Realm 监听端口 $realm_listen_port 未启动或启动失败。${NC}"
+        echo -e "${RED}请检查 EZrealm 配置过程或运行 './realm.sh' 查看 Realm 状态。${NC}"
+        # 不在此处退出，允许用户查看后续信息
+    fi
+
     echo -e "\n${GREEN}--- Realm 转发配置引导完成 ---${NC}"
     echo -e "请确认您已根据 EZrealm 的提示成功添加了转发规则。"
     echo -e "客户端应连接到此线路机："
-    local relay_ip=$(curl -s https://api.ipify.org || hostname -I | awk '{print $1}')
+    local relay_ip=$(curl -s --connect-timeout 5 https://api.ipify.org || hostname -I | awk '{print $1}')
     echo -e "服务器地址: ${YELLOW}$relay_ip${NC}"
     echo -e "服务器端口: ${YELLOW}$realm_listen_port${NC}"
     echo -e "协议: ${YELLOW}Snell v4${NC}"
