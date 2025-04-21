@@ -83,111 +83,29 @@ generate_psk() {
 # 函数：配置落地服务器 (Snell)
 setup_landing_server() {
     echo -e "${GREEN}--- 开始配置落地服务器 (Snell v4) ---${NC}"
-    install_deps wget unzip systemctl
+    install_deps curl # jinqians/snell.sh 需要 curl
 
-    local snell_url="https://github.com/surge-networks/snell/releases/download/v4.0.1/snell-server-v4.0.1-linux-amd64.zip"
-    local snell_zip="snell-server.zip"
-    local snell_bin="snell-server"
-    local install_path="/usr/local/bin"
-    local config_dir="/etc/snell"
-    local config_file="$config_dir/snell-server.conf"
-    local service_file="/etc/systemd/system/snell.service"
+    echo -e "${YELLOW}本脚本将使用 jinqians/snell.sh 提供的脚本来安装 Snell 服务。${NC}"
+    echo -e "${YELLOW}请仔细阅读该脚本执行过程中的输出。${NC}"
+    echo -e "${RED}安装完成后，请务必手动记录下脚本输出的【IP 地址】、【Snell 端口】和【Snell PSK】。${NC}"
+    echo -e "${RED}这些信息是下一步配置线路机（Realm）所必需的！${NC}"
+    read -p "按 Enter 键继续执行 jinqians/snell.sh 安装脚本..."
 
-    # --- 下载和安装 Snell ---
-    echo -e "${YELLOW}正在下载 Snell v4 服务端...${NC}"
-    wget -q --tries=3 --connect-timeout=15 -O "$snell_zip" "$snell_url"
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}错误：Snell 下载失败，请检查网络或链接。${NC}"
-        exit 1
-    fi
+    # 执行 jinqians/snell.sh 的安装命令
+    bash <(curl -L -s snell.jinqians.com)
 
-    echo -e "${YELLOW}正在解压 Snell...${NC}"
-    unzip -o "$snell_zip" "$snell_bin" -d ./
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}错误：Snell 解压失败。${NC}"
-        rm -f "$snell_zip"
-        exit 1
-    fi
-    rm -f "$snell_zip"
-
-    echo -e "${YELLOW}正在安装 Snell 到 $install_path...${NC}"
-    mv "$snell_bin" "$install_path/"
-    chmod +x "$install_path/$snell_bin"
-
-    # --- 生成配置 ---
-    local snell_port=$(generate_port)
-    local snell_psk=$(generate_psk)
-
-    echo -e "${YELLOW}正在创建 Snell 配置文件...${NC}"
-    mkdir -p "$config_dir"
-    cat > "$config_file" << EOF
-[snell-server]
-listen = 0.0.0.0:$snell_port
-psk = $snell_psk
-ipv6 = false
-# obfs = off (如果需要混淆，可以设置为 http 或 tls)
-EOF
-
-    # --- 创建 Systemd 服务 ---
-    echo -e "${YELLOW}正在创建 Systemd 服务文件...${NC}"
-    cat > "$service_file" << EOF
-[Unit]
-Description=Snell Proxy Service v4
-After=network.target
-
-[Service]
-Type=simple
-User=nobody
-# 对于某些系统，可能是 nogroup 或 nobody
-Group=$(getent group nobody > /dev/null && echo nobody || echo nogroup)
-LimitNOFILE=32768
-ExecStart=$install_path/$snell_bin -c $config_file
-StandardOutput=syslog
-StandardError=syslog
-SyslogIdentifier=snell-server
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    # --- 启动并启用服务 ---
-    echo -e "${YELLOW}正在重载 Systemd 并启动 Snell 服务...${NC}"
-    systemctl daemon-reload
-    systemctl enable snell
-    systemctl restart snell
-
-    # --- 检查服务状态 (增加重试) ---
-    echo -e "${YELLOW}正在检查 Snell 服务状态...${NC}"
-    local retry_count=0
-    local max_retries=5
-    local check_interval=2 # seconds
-    while ! systemctl is-active --quiet snell && [ $retry_count -lt $max_retries ]; do
-        echo -e "${YELLOW}Snell 服务尚未启动，等待 $check_interval 秒后重试 ($((retry_count+1))/$max_retries)...${NC}"
-        sleep $check_interval
-        ((retry_count++))
-    done
-
-    if systemctl is-active --quiet snell; then
-        echo -e "${GREEN}Snell 服务已成功启动并设置为开机自启！${NC}"
+    local exit_code=$?
+    if [ $exit_code -eq 0 ]; then
+        echo -e "\\n${GREEN}jinqians/snell.sh 脚本执行完成。${NC}"
+        echo -e "${YELLOW}请确认您已记录下 Snell 的 IP、端口和 PSK。${NC}"
+        echo -e "${YELLOW}同时，请确保防火墙已放行 Snell 服务所使用的 TCP 端口。${NC}"
     else
-        echo -e "${RED}错误：Snell 服务启动失败。请检查日志：journalctl -u snell ${NC}"
-        systemctl status snell
+        echo -e "\\n${RED}错误：jinqians/snell.sh 脚本执行失败，退出码: $exit_code。${NC}"
+        echo -e "${RED}请检查网络连接或尝试手动执行 'bash <(curl -L -s snell.jinqians.com)' 查看具体错误。${NC}"
         exit 1
     fi
 
-    # --- 显示配置信息 ---
-    local server_ip=$(curl -s --connect-timeout 5 https://api.ipify.org || hostname -I | awk '{print $1}')
-    echo -e "\n${GREEN}--- Snell 落地服务器配置完成 ---${NC}"
-    echo -e "请记录以下信息，将在配置线路机时使用："
-    echo -e "落地服务器 IP: ${YELLOW}$server_ip${NC}"
-    echo -e "Snell 端口: ${YELLOW}$snell_port${NC}"
-    echo -e "Snell 密码 (PSK): ${YELLOW}$snell_psk${NC}"
-    echo -e "\\n可以直接复制到 Surge 配置 [Proxy] 段的格式："
-    echo -e "${YELLOW}Snell_Landing = snell, $server_ip, $snell_port, psk=$snell_psk, version=4, reuse=true, tfo=true${NC}"
-    echo -e "${YELLOW}(注意：此配置未启用 obfs。如需 shadow-tls 等混淆，请自行修改 Snell 服务端配置并在此行添加相应参数)${NC}"
-    echo -e "\\n${YELLOW}重要提示：请确保防火墙已放行 TCP 端口 $snell_port ${NC}"
+    echo -e "${GREEN}落地服务器 Snell 配置步骤（通过外部脚本）已触发。请根据外部脚本提示操作并记录信息。${NC}"
     echo -e "${GREEN}-----------------------------------${NC}"
 }
 

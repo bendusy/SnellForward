@@ -138,6 +138,10 @@ sudo ./setup_snell_realm.sh
     echo "Realm 已通过 EZrealm 卸载。防火墙规则可能需要手动移除。"
     ```
 
+## 致谢 (Acknowledgements)
+
+本脚本在实现落地服务器 Snell 安装部分，参考并推荐使用了来自 [jinqians/snell.sh](https://github.com/jinqians/snell.sh) 的安装脚本，以提高安装的稳定性和易用性。特此感谢。
+
 ## License
 
 [MIT](/LICENSE)
